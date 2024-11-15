@@ -14,7 +14,7 @@ trainer:
       init_args:
         dirpath: ${trainer.default_root_dir} 
         filename: ckpt-{step:06d}-{val_loss:.2f}
-        monitor: 'val/loss'
+        monitor: 'val_loss'
         verbose: false
         save_last: true
         save_top_k: 2
@@ -57,7 +57,7 @@ trainer:
   plugins: null
   sync_batchnorm: false
   reload_dataloaders_every_n_epochs: 0
-  default_root_dir: null
+  default_root_dir: lightning_logs/FM/
 model:
   env: 
     class_path: cpgfn.envs.AdditivePepEnv
@@ -74,17 +74,19 @@ model:
       embedding_dim: 512
       nhead: 8
       dim_feedforward: 2048
-      num_layers: 6
+      num_layers: 4
       max_length: ${model.env.init_args.max_length}
       pos_embedding: linear
+  loss: fm
+  alpha: 1.
   head_hidden_dim: 1024
-  train_bs: 128
+  train_bs: 24
   val_bs: 512
-  lr: 1e-3
-  z0: 32.
-  sf_bias: -1.
-  epsilon: 1.
-  # load_state_from: lightning_logs/version_19/checkpoints/ckpt-step=002950-val_loss=31.19.ckpt
+  lr: 5e-4
+  # z0: 32.
+  # sf_bias: -1.
+  # epsilon: 1.
+  # load_state_from: lightning_logs/FM/ckpt-step=001900-val_loss=10.26.ckpt
 data:
   train_bs: ${model.train_bs}
   val_bs: ${model.val_bs}

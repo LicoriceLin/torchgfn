@@ -10,7 +10,7 @@ def seqlength_dist(seqs:List[str],max_length:int=20):
     fig,ax=plt.subplots(1,1)
     ax:Axes
     pd.Series([len(i)for i in seqs]).hist(ax=ax,density=True,bins=np.linspace(0,max_length,max_length+1))
-    ax.set_xticks(np.arange(0.5,max_length),np.arange(0,max_length))
+    ax.set_xticks(np.linspace(0,max_length,max_length+1),np.linspace(0,max_length,max_length+1))
     return fig,ax
 
 aa_tokens = tuple('KREDHQNCGPASTMLVIFWY')

@@ -17,12 +17,12 @@ class CircularEncoder(BaseBackboneModule):
         the action of exit codes
         len(env.aa_tokens)
     might cause future conflicts!
-    
-            
+    Also, We don't have a proper <bos>
+    Theoretical, use <bos> embedding only here could have better performance than mean of every thing
     TODO
-    1.Make it a multiple layer encoder.
-    2.Our module is now 100% autoregressive.
+    1.Our module is now 100% autoregressive.
         Use Decoder-Only frameworks.
+    
     '''
     def __init__(self, 
             embedding_dim:int=128,
@@ -77,6 +77,9 @@ class CircularEncoder(BaseBackboneModule):
         Consider future implementation of `jaxtyping`
 
         '''
+        if trajs.shape[0]==0:
+            return torch.zeros(*trajs.shape,self.embedding_dim,device=trajs.device)
+        
         trajs = torch.where(trajs != self.sf_code, trajs, self.s0_code)
         # trajs.clone()
         trajs[trajs == self.sf_code] = self.s0_code
@@ -109,7 +112,7 @@ class CircularEncoder(BaseBackboneModule):
 
     def linear_embedding(self, trajs:Tensor, encoder_mask:Tensor):
         b,s,n=trajs.shape
-        trajs=trajs.reshape(b,s,self.nhead,-1)
+        trajs=trajs.reshape(b,s,self.nhead,self.embedding_dim//self.nhead)
         trajs=self.pos_embedder_(trajs)
         return trajs.reshape(b,s,-1)
         # assert isinstance(self.embedder,RotaryPositionalEmbeddings)

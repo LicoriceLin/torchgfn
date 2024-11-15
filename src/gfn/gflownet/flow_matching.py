@@ -116,25 +116,27 @@ class FMGFlowNet(GFlowNet[Tuple[DiscreteStates, DiscreteStates]]):
                 valid_forward_conditioning = conditioning[valid_forward_mask]
 
                 with has_conditioning_exception_handler("logF", self.logF):
-                    incoming_log_flows[valid_backward_mask, action_idx] = self.logF(
-                        valid_backward_states_parents,
-                        valid_backward_conditioning,
-                    )[:, action_idx]
-
-                    outgoing_log_flows[valid_forward_mask, action_idx] = self.logF(
-                        valid_forward_states,
-                        valid_forward_conditioning,
-                    )[:, action_idx]
+                    if valid_backward_states_parents.tensor.shape[0]!=0:
+                        incoming_log_flows[valid_backward_mask, action_idx] = self.logF(
+                            valid_backward_states_parents,
+                            valid_backward_conditioning,
+                        )[:, action_idx]
+                    if valid_forward_states.tensor.shape[0]!=0:
+                        outgoing_log_flows[valid_forward_mask, action_idx] = self.logF(
+                            valid_forward_states,
+                            valid_forward_conditioning,
+                        )[:, action_idx]
 
             else:
                 with no_conditioning_exception_handler("logF", self.logF):
-                    incoming_log_flows[valid_backward_mask, action_idx] = self.logF(
-                        valid_backward_states_parents,
-                    )[:, action_idx]
-
-                    outgoing_log_flows[valid_forward_mask, action_idx] = self.logF(
-                        valid_forward_states,
-                    )[:, action_idx]
+                    if valid_backward_states_parents.tensor.shape[0]!=0:
+                        incoming_log_flows[valid_backward_mask, action_idx] = self.logF(
+                            valid_backward_states_parents,
+                        )[:, action_idx]
+                    if valid_forward_states.tensor.shape[0]!=0:
+                        outgoing_log_flows[valid_forward_mask, action_idx] = self.logF(
+                            valid_forward_states,
+                        )[:, action_idx]
 
         # Now the exit action.
         valid_forward_mask = states.forward_masks[:, -1]

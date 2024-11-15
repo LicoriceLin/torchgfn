@@ -5,7 +5,7 @@ mode_dict={
         2:'MLVIFWY',
     }
 
-def simple_pattern_v0(seq:str):
+def simple_pattern_v0(seq:str,**kwargs):
     s=0.
     seq_len=len(seq)
     if seq_len in [0,20]:
@@ -33,7 +33,8 @@ def simple_pattern_v1(seq:str,
         pos_score:int=10,
         beta:float=1.,
         hard_maxlen_penalty:bool=True,
-        log_s:bool=False):
+        log_s:bool=False,
+        **kwargs):
     '''
     rewards would be e**(v0_rewards)
     '''

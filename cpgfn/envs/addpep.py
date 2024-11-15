@@ -18,7 +18,7 @@ import numpy as np
 import pandas as pd
 
 from cpgfn import rewards
-from inspect import signature
+from inspect import signature,_empty
 
 class IdentityLongPreprocessor(Preprocessor):
     """Simple preprocessor applicable to environments with uni-dimensional states.
@@ -90,12 +90,16 @@ class AdditivePepEnv(DiscreteEnv):
             preprocessor=preprocessor,
             device_str=device_str,
         )
+        
         assert reward in rewards.REWARD_REGISTRY
         reward_fn=rewards.REWARD_REGISTRY[reward]
         si=signature(reward_fn)
         assert 'seq' in si.parameters
+        reward_kwargs_={k:v.default for k,v in si.parameters.items() if v.default is not _empty}
+        reward_kwargs_.update(reward_kwargs)
         if 'max_length' in si.parameters:
-            reward_kwargs.update({'max_length':max_length})
+            reward_kwargs_.update({'max_length':max_length})
+        self.reward_kwargs=reward_kwargs_
         self.reward_fn=partial(reward_fn,**reward_kwargs)
         
         # self.states_class=self.make_states_class()

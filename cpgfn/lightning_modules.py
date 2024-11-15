@@ -8,7 +8,7 @@ from gfn.modules import DiscretePolicyEstimator
 from lightning.pytorch.cli import LightningCLI
 from torch import Tensor,nn
 import torch
-from gfn.gflownet import TBGFlowNet
+from gfn.gflownet import TBGFlowNet,FMGFlowNet
 from gfn.containers import Trajectories
 from .utils.plots import aa_dist,seqlength_dist,reward_dist
 from lightning.pytorch.loggers import TensorBoardLogger
@@ -24,15 +24,19 @@ python -m cpgfn.lightning_modules fit --model.env.help AdditivePepEnv
 # %%
 class AdditivePepTBModule(L.LightningModule):
     logger:TensorBoardLogger
-    
+    gfn:TBGFlowNet|FMGFlowNet
     def __init__(self,   
         env:AdditivePepEnv,
         backbone:BaseBackboneModule,
+        loss:Literal['tb','fm']='tb',
         head_hidden_dim:int=512,
         train_bs:int=32,
         val_bs:int=512,
         lr:float=0.1,
+        
         z0:float=0.,
+        alpha: float = 1.0,
+        
         load_state_from:str|None = None,
         sf_bias: float = 0.0,
         epsilon: float = 0.0,
@@ -49,33 +53,61 @@ class AdditivePepTBModule(L.LightningModule):
         self.sf_bias=sf_bias
         self.epsilon = epsilon
         self.temperature=temperature
-        pf_estimator = DiscretePolicyEstimator(
-            add_head(backbone,head_hidden_dim,env.n_actions),
-            n_actions=env.n_actions,
-            is_backward=False,
-            preprocessor=env.preprocessor,
-        )
+        
+        self.loss=loss
+        
+        #Temperal,for logging
+        self.max_length=self.env.max_length
+        self.beta=self.env.reward_kwargs.get('beta',0.)
+        self.max_score=sum([v for k,v in self.env.reward_kwargs.items() if 'score' in k])
+        
+        if self.loss=='tb':   
+            pf_estimator = DiscretePolicyEstimator(
+                add_head(backbone,head_hidden_dim,env.n_actions),
+                n_actions=env.n_actions,
+                is_backward=False,
+                preprocessor=env.preprocessor,
+            )
 
-        pb_estimator = DiscretePolicyEstimator(
-            add_head(backbone,head_hidden_dim,env.n_actions-1),
-            n_actions=env.n_actions,
-            is_backward=True,
-            preprocessor=env.preprocessor,
-        )
-        self.gfn = TBGFlowNet(logZ=z0, pf=pf_estimator, pb=pb_estimator)
+            pb_estimator = DiscretePolicyEstimator(
+                add_head(backbone,head_hidden_dim,env.n_actions-1),
+                n_actions=env.n_actions,
+                is_backward=True,
+                preprocessor=env.preprocessor,
+            )
+            self.gfn = TBGFlowNet(logZ=z0, pf=pf_estimator, pb=pb_estimator)
+            
+        elif self.loss=='fm':
+            logf_estimator=DiscretePolicyEstimator(
+                add_head(backbone,head_hidden_dim,env.n_actions),
+                n_actions=env.n_actions,
+                is_backward=False,
+                preprocessor=env.preprocessor,
+            )
+            self.gfn=FMGFlowNet(logf_estimator,alpha=alpha)
+            
         if load_state_from:
             self.load_state_dict(torch.load(load_state_from)['state_dict'])
+    
+            
     def training_step(self, batch:Tensor, batch_idx):
         # with torch.no_grad():
         trajectories=self.gfn.sample_trajectories(self.env,self.train_bs,
             sf_bias=self.sf_bias, epsilon=self.epsilon,temperature=self.temperature)
             
         # import pdb;pdb.set_trace()
-        loss=self.gfn.loss(self.env, trajectories)
+        if self.loss=='tb':
+            loss=self.gfn.loss(self.env, trajectories=trajectories)
+        elif self.loss=='fm':
+            samples=self.gfn.to_training_samples(trajectories)
+            loss=self.gfn.loss(self.env,states_tuple=samples)
+            
         self.log('train/loss',loss)
-        self.log('train/mean_rewards',torch.exp(trajectories.log_rewards-1).mean())
+        self.log('train/mean_rewards',torch.exp(trajectories.log_rewards-self.beta).mean())
         self.log('train/mean_len',trajectories.when_is_done.float().mean()-1)
         return loss
+    
+    
     def validation_step(self, batch:Tensor, batch_idx):
         trajectories=self.gfn.sample_trajectories(self.env,self.val_bs)
         
@@ -84,36 +116,43 @@ class AdditivePepTBModule(L.LightningModule):
                 ).to(trajectories.when_is_done.device)]
         
         seqs=self.env.states_to_seqs(final_states)
-        print(seqs[:5])
         
-        loss = self.gfn.loss(self.env, trajectories)
+        if self.loss=='tb':
+            loss=self.gfn.loss(self.env, trajectories=trajectories)
+        elif self.loss=='fm':
+            samples=self.gfn.to_training_samples(trajectories)
+            loss=self.gfn.loss(self.env,states_tuple=samples)
         
         global_step=self.trainer.global_step
-        
-        
         
         
         #TODO multiple GPU training compatible
         # self.logger.experiment:SummaryWriter
         writer:SummaryWriter=self.logger._experiment
         writer.add_figure(tag='val/length_dist',
-                figure=seqlength_dist(seqs,max_length=self.env.max_length)[0],global_step=global_step)
+                figure=seqlength_dist(seqs,max_length=self.max_length)[0],global_step=global_step)
         writer.add_figure(tag='val/aa_dist',
-                figure=aa_dist(seqs,max_length=self.env.max_length)[0],global_step=global_step)
-        #TODO -1 -> beta, 20 -> max_score
+                figure=aa_dist(seqs,max_length=self.max_length)[0],global_step=global_step)
         writer.add_figure(tag='val/reward_dist',
-                figure=reward_dist(torch.exp(trajectories.log_rewards-1.),max_score=20)[0],global_step=global_step)
+                figure=reward_dist(torch.exp(trajectories.log_rewards-self.beta),max_score=self.max_score)[0],global_step=global_step)
         
-        self.log("val/mean_rewards",torch.exp(trajectories.log_rewards-1.).mean())
-        self.log("val/loss", loss.item())
-        self.log('val/z0',self.gfn.logZ.item())
+        writer.add_text('val/sample_seq','\n'.join(seqs[:5]),global_step=global_step)
+        writer.add_scalar("val/mean_rewards",torch.exp(trajectories.log_rewards-self.beta).mean(),global_step=global_step)
+        writer.add_scalar("val/loss", loss.item(),global_step=global_step)
+        if self.loss=='tb':
+            writer.add_scalar('val/z0',self.gfn.logZ.item(),global_step=global_step)
+        # elif self.loss=='fm':
+        
         self.log("val_loss", loss.item())
         
         
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.gfn.pf_pb_parameters(), lr=self.lr)
-        optimizer.add_param_group({"params": self.gfn.logz_parameters(), "lr": self.lr*10})
-        scheduler=ReduceLROnPlateau(optimizer,threshold=0.05,min_lr=self.lr*1e-4,patience=5,factor=0.5)
+        if self.loss =='tb':
+            optimizer = torch.optim.Adam(self.gfn.pf_pb_parameters(), lr=self.lr)
+            optimizer.add_param_group({"params": self.gfn.logz_parameters(), "lr": self.lr*10})
+        elif self.loss == 'fm':
+            optimizer = torch.optim.Adam(self.gfn.parameters(), lr=self.lr)
+        scheduler=ReduceLROnPlateau(optimizer,threshold=1e-4,min_lr=self.lr*1e-4,patience=20,factor=0.5)
         return {
             "optimizer": optimizer, 
             "lr_scheduler": 
