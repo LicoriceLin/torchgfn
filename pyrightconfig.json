@@ -36,7 +36,7 @@
         "*tar",
         "*pkl",
         "reseek*",
-        "log/",
+        "*log*/",
         "*.db/",
         "*csv",
       ],

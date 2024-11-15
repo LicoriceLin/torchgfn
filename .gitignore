@@ -182,9 +182,9 @@ wandb/
 
 scripts.py
 
-models/
+# models/
 *.DS_Store
 
 *.db/
 tmp*
-log*/
+*log*/

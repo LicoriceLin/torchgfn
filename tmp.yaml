@@ -1,0 +1,94 @@
+# lightning.pytorch==2.4.0
+seed_everything: 42
+trainer:
+  accelerator: gpu
+  strategy: auto
+  devices:
+    - 0
+  num_nodes: 1
+  precision: null
+  logger: null
+  callbacks:
+    - class_path: lightning.pytorch.callbacks.LearningRateMonitor
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        dirpath: ${trainer.default_root_dir} 
+        filename: ckpt-{step:06d}-{val_loss:.2f}
+        monitor: 'val/loss'
+        verbose: false
+        save_last: true
+        save_top_k: 2
+        save_weights_only: false
+        mode: min
+        auto_insert_metric_name: true
+        every_n_train_steps: ${trainer.val_check_interval} 
+        train_time_interval: null
+        every_n_epochs: null
+        save_on_train_epoch_end: null
+        enable_version_counter: true
+  fast_dev_run: false
+  max_epochs: null
+  min_epochs: null
+  max_steps: 100000
+  min_steps: null
+  max_time: null
+  limit_train_batches: null
+  limit_val_batches: 1
+  limit_test_batches: null
+  limit_predict_batches: null
+  overfit_batches: 0.0
+  val_check_interval: 50
+  check_val_every_n_epoch: null
+  num_sanity_val_steps: null
+  log_every_n_steps: 1
+  enable_checkpointing: null
+  enable_progress_bar: null
+  enable_model_summary: null
+  accumulate_grad_batches: 1
+  gradient_clip_val: null
+  gradient_clip_algorithm: null
+  deterministic: null
+  benchmark: null
+  inference_mode: true
+  use_distributed_sampler: true
+  profiler: null
+  detect_anomaly: false
+  barebones: false
+  plugins: null
+  sync_batchnorm: false
+  reload_dataloaders_every_n_epochs: 0
+  default_root_dir: null
+model:
+  env: 
+    class_path: cpgfn.envs.AdditivePepEnv
+    init_args:
+      reward: simple_pattern_v1
+      min_length: 1
+      max_length: 12
+      reward_kwargs:
+        hard_maxlen_penalty: false
+        log_s: True
+  backbone: 
+    class_path: cpgfn.models.CircularEncoder
+    init_args:
+      embedding_dim: 512
+      nhead: 8
+      dim_feedforward: 2048
+      num_layers: 6
+      max_length: ${model.env.init_args.max_length}
+      pos_embedding: linear
+  head_hidden_dim: 1024
+  train_bs: 128
+  val_bs: 512
+  lr: 1e-3
+  z0: 32.
+  sf_bias: -1.
+  epsilon: 1.
+  # load_state_from: lightning_logs/version_19/checkpoints/ckpt-step=002950-val_loss=31.19.ckpt
+data:
+  train_bs: ${model.train_bs}
+  val_bs: ${model.val_bs}
+  max_worker: 16
+optimizer: null
+lr_scheduler: null
+# ckpt_path: null
