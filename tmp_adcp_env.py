@@ -600,6 +600,7 @@ class SimplestModule(nn.Module):
 class SillyFeatureModule(nn.Module):
     def __init__(self, *args, **kwargs):
         super().__init__()       
+        raise NotImplementedError 
         
 class OfflineSeqOnlyDataSet(Dataset):
     def __init__(self, env: ADCPCycEnv):
@@ -694,7 +695,7 @@ if __name__ == "__main__":
         # TODO don't save model as a whole. Save its parameters/states only.
         optimizer = torch.optim.Adam(gfn.pf_pb_parameters(), lr=5e-1)
         optimizer.add_param_group({"params": gfn.logz_parameters(), "lr": 5e-1})
-        
+        scheduler=ReduceLROnPlateau(optimizer,threshold=0.05,min_lr=10e-4)
         # torch.nn.utils.clip_grad_value_(module_PF.parameters(), 0.5)
         # torch.nn.utils.clip_grad_value_(gfn.logz_parameters(), 1.)
 
@@ -710,7 +711,7 @@ if __name__ == "__main__":
                     
                 optimizer.zero_grad()
                 # optimizer.add_param_group({"params": gfn.logz_parameters(), "lr": 1e-1})
-                scheduler=ReduceLROnPlateau(optimizer,threshold=0.05,min_lr=10e-4)
+                
                 loss = gfn.loss(adcp_env, trajectories)
                 # print(loss)
                 
