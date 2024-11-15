@@ -74,7 +74,7 @@ model:
       embedding_dim: 512
       nhead: 8
       dim_feedforward: 2048
-      num_layers: 4
+      num_layers: 6
       max_length: ${model.env.init_args.max_length}
       pos_embedding: linear
   loss: fm
