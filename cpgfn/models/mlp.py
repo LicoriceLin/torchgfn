@@ -22,7 +22,7 @@ class OneHotBackbone(BaseBackboneModule):
         ):
         # hard-code s0/sf since they are also hard-coded in Env
         s0_code=20
-        sf_code=-100
+        sf_code=21
         
         super().__init__(embedding_dim=embedding_dim)
         num_tokens=s0_code
@@ -32,7 +32,7 @@ class OneHotBackbone(BaseBackboneModule):
         (self.hide_dim,self.num_layers,self.dropout
             )=hide_dim,num_layers,dropout
         
-        self.input = nn.Linear(self.max_length*(self.num_tokens+1),hide_dim)
+        self.input = nn.Linear((self.max_length+2)*(self.num_tokens+1),hide_dim)
         hidden_layers = []
         
         for _ in range(num_layers):
@@ -51,6 +51,13 @@ class OneHotBackbone(BaseBackboneModule):
         x=x.reshape(*x.shape[:-2],-1)
         return self.output(self.hidden(self.input(x)))
     
+class PosToFillBackbone(BaseBackboneModule):
+    def __init__(self, 
+        embedding_dim,
+        max_length,
+        num_layers:int=5,
+        hide_dim:int=2048):
+        super().__init__(embedding_dim)
     
 @deprecated('use `BaseBackboneModule`s')
 class MLPModule(nn.Module):
