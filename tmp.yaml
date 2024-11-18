@@ -17,7 +17,7 @@ trainer:
         monitor: 'val_loss'
         verbose: false
         save_last: true
-        save_top_k: 2
+        save_top_k: 1
         save_weights_only: false
         mode: min
         auto_insert_metric_name: true
@@ -37,7 +37,7 @@ trainer:
   limit_test_batches: null
   limit_predict_batches: 1
   overfit_batches: 0.0
-  val_check_interval: 50
+  val_check_interval: 500
   check_val_every_n_epoch: null
   num_sanity_val_steps: null
   log_every_n_steps: 1
@@ -57,13 +57,13 @@ trainer:
   plugins: null
   sync_batchnorm: false
   reload_dataloaders_every_n_epochs: 0
-  default_root_dir: lightning_logs/FIT/
+  default_root_dir: lightning_logs/TB_finetune_min6/
 model:
   env: 
     class_path: cpgfn.envs.AdditivePepEnv
     init_args:
       reward: simple_pattern_v1
-      min_length: 1
+      min_length: 6
       max_length: 12
       reward_kwargs:
         hard_maxlen_penalty: false
@@ -79,22 +79,31 @@ model:
       num_layers: 6
       max_length: ${model.env.init_args.max_length}
       pos_embedding: linear
-  loss_mode: fit
+  loss_mode: tb
   sample_mode: random
   # alpha: 2.
-  z0: 32.
+  z0: 40.
+  logZ_lr_coef: 1e3
+
   head_hidden_dim: 1024
-  train_bs: 256
+  head_num_layers: 3
+  final_norm: false
+
+  train_bs: 16
   val_bs: 512
   lr: 1e-4
-  
+  freeze_backbone: 60000
+  denom_lr: 20
   sf_bias: -0.5
   epsilon: 0.3
-  # load_state_from: lightning_logs/FM/ckpt-step=001900-val_loss=10.26.ckpt
+  temperature: 1.0
+  
+  load_mode: backbone
+  load_state_from: lightning_logs/FIT/ckpt-step=086400-val_loss=0.00.ckpt
 data:
   train_bs: ${model.train_bs}
   val_bs: ${model.val_bs}
-  max_worker: 16
+  max_worker: 1
 optimizer: null
 lr_scheduler: null
 # ckpt_path: null

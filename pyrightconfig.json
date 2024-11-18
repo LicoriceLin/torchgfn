@@ -53,5 +53,6 @@
       "reportGeneralTypeIssues": "information",
       "reportOptionalContextManager": "information",
       "reportOptionalIterable": "information",
+      "reportIndexIssue": "information"
       
   }
