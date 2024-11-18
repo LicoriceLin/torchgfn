@@ -188,3 +188,4 @@ scripts.py
 *.db/
 tmp*
 *log*/
+legacy/

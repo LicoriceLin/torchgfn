@@ -18,7 +18,9 @@ import numpy as np
 import pandas as pd
 
 from cpgfn import rewards
-from inspect import signature
+from inspect import signature,_empty
+
+import random
 
 class IdentityLongPreprocessor(Preprocessor):
     """Simple preprocessor applicable to environments with uni-dimensional states.
@@ -37,6 +39,23 @@ class IdentityLongPreprocessor(Preprocessor):
 # Literal[*tuple(rewards.REWARD_REGISTRY.keys())]
 class AdditivePepEnv(DiscreteEnv):
     '''
+    
+    rigid properties
+    
+    n_actions: 21 (aa + 1)
+    Action IDs:
+    0-19: Add AAs
+    20: Exits
+    21: Dummy Actions
+    
+    Token IDs
+    0-19: AAs 
+    20: <bos>; s0_code
+    21: <pad>; sf_code
+    
+    s0: [20,21,21,...]
+    sf: [21,21,21,...]
+    
     `reward`: key in rewards.REWARD_REGISTRY
     
     '''
@@ -47,36 +66,42 @@ class AdditivePepEnv(DiscreteEnv):
         max_length: int = 16,
         device_str: str|int = 'cpu',
         reward_kwargs:Dict[str,Any]={},
-        # reward_mode:Literal['look_up','simple_pattern']='look_up',
-        # module_mode:Literal['CycEncoder','MLP']='CycEncoder'
-        # preprocessor: Optional[Preprocessor] = None,
+        preprocessor_mode:Literal['identical','pos_to_fill']='identical'
     ):
         self.min_length = min_length
         self.max_length = max_length
         self.device = torch.device(device_str) # redundant
         self.aa_tokens = tuple(protein_letters_1to3.keys())
-        # self.reward_mode=reward_mode
-        # self.module_mode=module_mode
+
+
+        # s_max_length: [20,0,1,...,21] (last code should always be 21) 
         n_actions = len(self.aa_tokens) + 1  # last action reserved for exit
 
         self.s0_code, self.sf_code, self.dummy_code, self.exit_code = (
             n_actions - 1,
-            -100,
-            -1,
-            n_actions - 1,
+            n_actions,
+            n_actions,
+            n_actions -1,
         )
-
+        state_shape = (self.max_length+2,)
         s0 = torch.full(
-            (max_length,), fill_value=self.s0_code, dtype=torch.long, device=self.device
+            state_shape, fill_value=self.sf_code, dtype=torch.long, device=self.device
         )
+        s0[0]=self.s0_code
+        
         sf = torch.full(
-            (max_length,), fill_value=self.sf_code, dtype=torch.long, device=self.device
+            state_shape, fill_value=self.sf_code, dtype=torch.long, device=self.device
         )
-        state_shape = (self.max_length,)
+        
+        
 
         action_shape = (1,)
         # preprocessor = OneHotPreprocessor(token_size=len(self.aa_tokens))
-        preprocessor = IdentityLongPreprocessor(output_dim=max_length)
+        if preprocessor_mode=='identical':
+            preprocessor = IdentityLongPreprocessor(output_dim=max_length)
+        elif preprocessor_mode=='pos_to_fill':
+            preprocessor = lambda states:self.cal_first_unfilled_pos(states_tensor=states.tensor)
+            
         dummy_action = torch.tensor([self.dummy_code], device=self.device)
         exit_action = torch.tensor([self.exit_code], device=self.device)
         super().__init__(
@@ -90,12 +115,16 @@ class AdditivePepEnv(DiscreteEnv):
             preprocessor=preprocessor,
             device_str=device_str,
         )
+        
         assert reward in rewards.REWARD_REGISTRY
         reward_fn=rewards.REWARD_REGISTRY[reward]
         si=signature(reward_fn)
         assert 'seq' in si.parameters
+        reward_kwargs_={k:v.default for k,v in si.parameters.items() if v.default is not _empty}
+        reward_kwargs_.update(reward_kwargs)
         if 'max_length' in si.parameters:
-            reward_kwargs.update({'max_length':max_length})
+            reward_kwargs_.update({'max_length':max_length})
+        self.reward_kwargs=reward_kwargs_
         self.reward_fn=partial(reward_fn,**reward_kwargs)
         
         # self.states_class=self.make_states_class()
@@ -112,11 +141,20 @@ class AdditivePepEnv(DiscreteEnv):
         self, states: DiscreteStates, actions: Actions
     ) -> Tensor:
         """
+        only consider valid & non-exit actions here
         """
         states_tensor, action_tensor = states.tensor, actions.tensor.squeeze(-1)
 
         # last_unfill_pos
         first_unfilled_pos = self.cal_first_unfilled_pos(states_tensor)
+        shape=states_tensor.shape
+        states_tensor=states_tensor.reshape(-1,shape[-1])
+        first_unfilled_pos=first_unfilled_pos.reshape(-1)
+        # import pdb;pdb.set_trace()
+        states_tensor[torch.arange(states_tensor.shape[0]),
+                      first_unfilled_pos]=action_tensor
+        states_tensor.reshape(*shape)
+        return states_tensor
         # make sure for full-filled states, the only action allowed is exit_action
 
         # might be redundant? as is secured in `update_masks`
@@ -124,48 +162,57 @@ class AdditivePepEnv(DiscreteEnv):
 
         # fill the last-unfilled pos with given aa codes/exit code
         # valid_mask= last_unfilled_pos!=-1
-        valid_mask = (
-            (first_unfilled_pos != -1)
-            & (action_tensor != self.exit_code)
-            & (action_tensor != self.dummy_code)
-        )
-        valid_indices = first_unfilled_pos[valid_mask]
+        # valid_mask = (
+        #     (first_unfilled_pos != -1)
+        #     & (action_tensor != self.exit_code)
+        #     & (action_tensor != self.dummy_code)
+        # )
+        # valid_indices = first_unfilled_pos[valid_mask]
         # batch_indices = torch.arange(states_tensor.shape[0]
         #         )[valid_mask].to(states_tensor.device)
         # return states_tensor,valid_mask,valid_indices
-        output = states_tensor.detach()
-        output[(*valid_mask.nonzero(as_tuple=True), valid_indices)] = action_tensor[
-            valid_mask
-        ]
-        return output
+        # output = states_tensor.detach()
+        # output[(*valid_mask.nonzero(as_tuple=True), valid_indices)] = action_tensor[
+        #     valid_mask
+        # ]
+        # return output
 
     def backward_step(
         self, states: DiscreteStates, actions: Actions
     ) -> Tensor:
 
         states_tensor, action_tensor = states.tensor, actions.tensor.squeeze(-1)
-        last_filled_pos = self.cal_last_filled_pos(states_tensor)
+        first_unfilled_pos = self.cal_first_unfilled_pos(states_tensor)
+        shape=states_tensor.shape
+        
+        states_tensor=states_tensor.reshape(-1,shape[-1])
+        first_unfilled_pos=first_unfilled_pos.reshape(-1)
+        states_tensor[
+            torch.arange(states_tensor.shape[0]),
+            first_unfilled_pos-1]=self.sf_code
+        states_tensor.reshape(*shape)
+        return states_tensor
         # current state is not s0
-        valid_mask = last_filled_pos != -1
-        valid_indices = last_filled_pos[valid_mask]
+        # valid_mask = last_filled_pos != -1
+        # valid_indices = last_filled_pos[valid_mask]
 
         # batch_indices = torch.arange(states_tensor.shape[0]
         #         )[valid_mask].to(states_tensor.device)'
         # return states_tensor,last_filled_pos,valid_mask,valid_indices
         # assert (states_tensor[(*valid_mask.nonzero(as_tuple=True),valid_indices)] == action_tensor[valid_mask]).all()
 
-        output = states_tensor.detach()
-        output[(*valid_mask.nonzero(as_tuple=True), valid_indices)] = self.s0_code
+        # output = states_tensor.detach()
+        # output[(*valid_mask.nonzero(as_tuple=True), valid_indices)] = self.s0_code
 
-        return output
+        # return output
         # mask = torch.argmax(mask_, dim=1)
         # mask[~mask_.any(dim=1)] = -1
              
     def update_masks(self, states: DiscreteStates) -> None:
         """Update the masks based on the current states."""
         states_tensor = states.tensor
-        # first_unfilled_pos=self.cal_first_unfilled_pos(states_tensor)
-        last_filled_pos = self.cal_last_filled_pos(states_tensor)
+        first_unfilled_pos=self.cal_first_unfilled_pos(states_tensor)
+        # last_filled_pos = self.cal_last_filled_pos(states_tensor)
 
         states.forward_masks = torch.ones(
             (*states.batch_shape, self.n_actions),
@@ -176,15 +223,22 @@ class AdditivePepEnv(DiscreteEnv):
         # for full-filled states, only allow exit
         states.forward_masks[
             (
-                *(last_filled_pos == self.max_length - 1).nonzero(as_tuple=True),
+                *(first_unfilled_pos == self.max_length + 1).nonzero(as_tuple=True),
                 slice(None, self.n_actions - 1),
             )
         ] = False
-            # states.forward_masks[(*(last_filled_pos==self.max_length-1).nonzero(as_tuple=True),slice(None,self.n_actions-1))]
+        # for sf states, everything prohibited
+        states.forward_masks[
+            (
+                *(first_unfilled_pos == 0).nonzero(as_tuple=True),
+                slice(None, self.n_actions),
+            )
+        ] = False
+        # states.forward_masks[(*(last_filled_pos==self.max_length-1).nonzero(as_tuple=True),slice(None,self.n_actions-1))]
         # for l<l_min, prohibit exit actions
         states.forward_masks[
             (
-                *(last_filled_pos < self.min_length - 1).nonzero(as_tuple=True),
+                *(first_unfilled_pos-1 < self.min_length ).nonzero(as_tuple=True),
                 self.n_actions - 1,
             )
         ] = False
@@ -194,14 +248,26 @@ class AdditivePepEnv(DiscreteEnv):
             dtype=torch.bool,
             device=states_tensor.device,
         )
-
-        valid_mask = last_filled_pos != -1
-        valid_indices = states_tensor[
-            (*valid_mask.nonzero(as_tuple=True), last_filled_pos[valid_mask])
-        ]
-        states.backward_masks[
-            (*valid_mask.nonzero(as_tuple=True), valid_indices)
-        ] = True
+        valid_mask = first_unfilled_pos > 1 # states with valid last-
+        
+        valid_indices=states_tensor[
+             (*valid_mask.nonzero(as_tuple=True),
+              first_unfilled_pos[valid_mask]-1
+              )
+            ]
+        
+        states.backward_masks[(
+                *valid_mask.nonzero(as_tuple=True), 
+                valid_indices,
+            )] = True
+        
+        # valid_mask = last_filled_pos != -1
+        # valid_indices = states_tensor[
+        #     (*valid_mask.nonzero(as_tuple=True), last_filled_pos[valid_mask])
+        # ]
+        # states.backward_masks[
+        #     (*valid_mask.nonzero(as_tuple=True), valid_indices)
+        # ] = True
 
     def log_reward(
         self, final_states: DiscreteStates
@@ -264,27 +330,33 @@ class AdditivePepEnv(DiscreteEnv):
     def cal_first_unfilled_pos(
         self, states_tensor: Tensor) -> Tensor:
         """
-        -1 for full-filled states & dummy
+        Return:  
+        
+        s0: return 1  
+        sf: return 0  
+        s_full: return max_length+1  
+        others: the idx of first sf_codes, i.e. real seq_length + 1  
         """
-        first_unfilled_pos_ = (states_tensor == self.s0_code).long()
+        first_unfilled_pos_ = (states_tensor == self.sf_code).long()
         first_unfilled_pos = torch.argmax(first_unfilled_pos_, dim=-1)
-        first_unfilled_pos[~first_unfilled_pos_.any(dim=-1)] = (
-            -1
-        )  # -1 for full-filled states
-        first_unfilled_pos[(states_tensor == self.sf_code).any(dim=-1)] = -1
         return first_unfilled_pos
+        # first_unfilled_pos[~first_unfilled_pos_.any(dim=-1)] = (
+        #     -1
+        # )  # -1 for full-filled states
+        # first_unfilled_pos[(states_tensor == self.sf_code).any(dim=-1)] = -1
+        # return first_unfilled_pos
 
-    def cal_last_filled_pos(
-        self, states_tensor: Tensor) -> Tensor:
-        """
-        -1 for s0 states & dummy
-        """
-        # get those totally unfilled pos
-        last_filled_pos = self.cal_first_unfilled_pos(states_tensor) - 1
-        # no unfilled -> last filled pos = len(states)
-        last_filled_pos[last_filled_pos == -2] = self.max_length - 1
-        last_filled_pos[(states_tensor == self.sf_code).any(dim=-1)] = -1
-        return last_filled_pos
+    # def cal_last_filled_pos(
+    #     self, states_tensor: Tensor) -> Tensor:
+    #     """
+    #     -1 for s0 states & dummy
+    #     """
+    #     # get those totally unfilled pos
+    #     last_filled_pos = self.cal_first_unfilled_pos(states_tensor) - 1
+    #     # no unfilled -> last filled pos = len(states)
+    #     last_filled_pos[last_filled_pos == -2] = self.max_length - 1
+    #     last_filled_pos[(states_tensor == self.sf_code).any(dim=-1)] = -1
+    #     return last_filled_pos
     
     def to(self,device:DeviceLikeType|None=None,dtype:dtype|None=None):
         if device is not None:
@@ -303,7 +375,7 @@ class AdditivePepEnv(DiscreteEnv):
     def states_to_seqs(self, final_states: DiscreteStates) -> List[str]:
         if final_states.batch_shape[0] != 0:
             a_arrays = np.vectorize(lambda x: self.aa_tokens[x] if x < 20 else "")(
-                final_states.tensor.cpu().numpy()
+                final_states.tensor[:,1:-1].cpu().numpy()
             )
         else:
             return []
@@ -315,25 +387,26 @@ class AdditivePepEnv(DiscreteEnv):
     
     @torch.inference_mode()  # is it legal?
     def seqs_to_trajectories(
-        self, seqs: List[str], module_pf: nn.Module
+        self, seqs: List[str], # module_pf: nn.Module
     ) -> Trajectories:
         """
         TODO: `Trajectories` should have a 'device' property,
-        so that all tensor should be initialized on CPU.
-        Otherwise, dataloader would be incompatibility with num_workers.
+        so that all tensors could be initialized on CPU (common practice for dataloader) and then transfer to something else.
         """
         # max_len=max([len(i) for i in seqs])
         seq_tensors, act_tensors, when_is_dones = [], [], []
         for seq in seqs:
-            t = torch.full((self.max_length + 2, self.max_length), self.s0_code).long()
+            t = torch.full((self.max_length + 2, *self.state_shape), self.sf_code).long()
             a = torch.full(
                 (self.max_length + 1, *self.action_shape), self.dummy_code
             ).long()
             l = len(seq)
             when_is_dones.append(l + 1)
+            
+            t[:,0]=self.s0_code
             for i, aa in enumerate(seq):
                 aidx = self.aa_tokens.index(aa)
-                t[i + 1 : l + 1, i] = aidx
+                t[i + 1 : l + 1, i+1] = aidx
                 a[i] = aidx
             t[l + 1 :] = self.sf_code
             a[l] = self.exit_code
@@ -344,41 +417,41 @@ class AdditivePepEnv(DiscreteEnv):
         # with torch.no_grad():
         states_tensor = torch.stack(seq_tensors, dim=1).to(self.device)
         action_tensor = torch.stack(act_tensors, dim=1).to(self.device)
-        states_class, action_class = self.make_states_class(), self.make_actions_class()
-        states: DiscreteStates = states_class(states_tensor)
-        actions: Actions = action_class(action_tensor)
+        # states_class, action_class = self.make_states_class(), self.make_actions_class()
+        states: DiscreteStates = self.States(states_tensor)
+        actions: Actions = self.Actions(action_tensor)
         self.update_masks(states)
         when_is_done = torch.tensor(when_is_dones).to(self.device)
 
-        # log_probs
+        # # log_probs
 
-        fw_probs = module_pf(states.tensor)
-        valid_state_mask = (states.tensor != self.sf_code).all(dim=-1)
-        # fw_probs[~states.forward_masks]=-torch.inf
-        fw_probs = torch.where(states.forward_masks, fw_probs, -torch.inf)  # -100.
+        # fw_probs = module_pf(states.tensor)
+        # valid_state_mask = (states.tensor != self.sf_code).all(dim=-1)
+        # # fw_probs[~states.forward_masks]=-torch.inf
+        # fw_probs = torch.where(states.forward_masks, fw_probs, -torch.inf)  # -100.
 
-        fw_probs = torch.nn.functional.softmax(fw_probs, dim=-1)
+        # fw_probs = torch.nn.functional.softmax(fw_probs, dim=-1)
 
-        # fw_probs[~valid_state_mask]=1
+        # # fw_probs[~valid_state_mask]=1
 
-        fw_probs = torch.where(
-            valid_state_mask.unsqueeze(-1).repeat(
-                *[1] * len(valid_state_mask.shape), fw_probs.shape[-1]
-            ),
-            fw_probs,
-            1.0,
-        )
+        # fw_probs = torch.where(
+        #     valid_state_mask.unsqueeze(-1).repeat(
+        #         *[1] * len(valid_state_mask.shape), fw_probs.shape[-1]
+        #     ),
+        #     fw_probs,
+        #     1.0,
+        # )
 
-        # a_tensor=actions.tensor.clone()
+        # # a_tensor=actions.tensor.clone()
         
-        # a_tensor[a_tensor==self.dummy_code]=self.exit_code
-        a_tensor = torch.where(
-            actions.tensor != self.dummy_code, actions.tensor, self.exit_code
-        )
+        # # a_tensor[a_tensor==self.dummy_code]=self.exit_code
+        # a_tensor = torch.where(
+        #     actions.tensor != self.dummy_code, actions.tensor, self.exit_code
+        # )
 
-        log_probs = torch.log(
-            torch.gather(input=fw_probs, dim=-1, index=a_tensor).squeeze(-1)
-        )
+        # log_probs = torch.log(
+        #     torch.gather(input=fw_probs, dim=-1, index=a_tensor).squeeze(-1)
+        # )
         
         # log_probs=torch.log(log_probs) .sum(dim=0)
         final_states = states[when_is_done - 1, torch.arange(len(seqs)).to(self.device)]
@@ -393,7 +466,8 @@ class AdditivePepEnv(DiscreteEnv):
             when_is_done=when_is_done,
             is_backward=False,
             log_rewards=log_rewards,
-            log_probs=log_probs,
+            # log_probs=log_probs,
+            log_probs=None,
             estimator_outputs=None,
         )
 
@@ -403,68 +477,53 @@ class AdditivePepEnv(DiscreteEnv):
         batch_size=trajectories.states.batch_shape[-1]
         final_states=trajectories.states[trajectories.when_is_done-1,torch.arange(batch_size)]
         return self.states_to_seqs(final_states)
-        
-    # TODO move to LightningModule
-    # def make_modules(self,**kwargs)->Tuple[nn.Module,nn.Module]:
-    #     # raise NotImplementedError
-    #     # env=self
-    #     '''
-    #     TODO set up shared truncks
-    #     kwargs: for Module initialization
-    #     '''
-    #     if self.module_mode=='CycEncoder':
-    #         encoder = CircularEncoder(self)
-    #         module_PF, module_PB = SillyModule(self.n_actions, encoder), SillyModule(
-    #             self.n_actions - 1, encoder
-    #         )
-    #     elif self.module_mode=='MLP':
-    #          module_PF= SimplestModule(self,self.n_actions,**kwargs)
-    #          module_PB = SimplestModule(self,self.n_actions-1,share_trunk_with=module_PF,**kwargs)
-    #     else:
-    #         raise ValueError
-        
-    #     return module_PF.to(self.device), module_PB.to(self.device)
 
+    def sample_random_seqs(self,n:int)->List[str]:
+        o=[]
+        for _ in range(n):
+            l=random.randint(self.min_length,self.max_length)
+            o.append(''.join(random.choices(self.aa_tokens,k=l)))
+        return o
     ### offline sampling ###
     # TODO move to LightningDataModules
-    def collate_fn(self,seqs: List[str], module_pf: nn.Module) -> Trajectories:
-        trajectories = self.seqs_to_trajectories(seqs, module_pf)
-        return trajectories
+    # def collate_fn(self,seqs: List[str], module_pf: nn.Module) -> Trajectories:
+    #     trajectories = self.seqs_to_trajectories(seqs, module_pf)
+    #     return trajectories
     
-    def make_offline_dataloader(
-        self, module_pf: nn.Module, 
-        dataset:Dataset,
-        **kwargs
-    ) -> DataLoader[Trajectories]:
-        """
-        kwargs for `DataLoader`
-        """
-        return DataLoader(
-            dataset=dataset,
-            collate_fn=partial(self.collate_fn, module_pf=module_pf),
-            **kwargs,
-        )
+    # def make_offline_dataloader(
+    #     self, module_pf: nn.Module, 
+    #     dataset:Dataset,
+    #     **kwargs
+    # ) -> DataLoader[Trajectories]:
+    #     """
+    #     kwargs for `DataLoader`
+    #     """
+    #     return DataLoader(
+    #         dataset=dataset,
+    #         collate_fn=partial(self.collate_fn, module_pf=module_pf),
+    #         **kwargs,
+    #     )
         
     ### Deprecated ###
-    def make_random_states_tensor(
-        self, batch_shape: Tuple[int, ...]
-        ) -> Tensor:
-        '''
-        Deprecated.
-        Randomly sample some sequences, then `seqs_to_trajectories`
-        '''
-        states_tensor = torch.full(
-            (*batch_shape, self.max_length), self.s0_code, device=self.device
-        ).long()
-        fill_until = torch.randint(0, self.max_length + 1, batch_shape)
-        # fill_until=torch.full(batch_shape,self.max_length)
-        for i in range(self.max_length):
-            mask = i < fill_until
-            random_numbers = torch.randint(
-                0, self.max_length, batch_shape, device=self.device
-            )
-            states_tensor[(*mask.nonzero(as_tuple=True), i)] = random_numbers[mask]
-        return states_tensor
+    # def make_random_states_tensor(
+    #     self, batch_shape: Tuple[int, ...]
+    #     ) -> Tensor:
+    #     '''
+    #     Deprecated.
+    #     Randomly sample some sequences, then `seqs_to_trajectories`
+    #     '''
+    #     states_tensor = torch.full(
+    #         (*batch_shape, self.max_length), self.s0_code, device=self.device
+    #     ).long()
+    #     fill_until = torch.randint(0, self.max_length + 1, batch_shape)
+    #     # fill_until=torch.full(batch_shape,self.max_length)
+    #     for i in range(self.max_length):
+    #         mask = i < fill_until
+    #         random_numbers = torch.randint(
+    #             0, self.max_length, batch_shape, device=self.device
+    #         )
+    #         states_tensor[(*mask.nonzero(as_tuple=True), i)] = random_numbers[mask]
+    #     return states_tensor
         # states.set_default_typing()
         # # Not allowed to take any action beyond the environment height, but
         # # allow early termination.

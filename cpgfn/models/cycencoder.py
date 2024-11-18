@@ -9,20 +9,11 @@ from typing import Literal
 
 class CircularEncoder(BaseBackboneModule):
     '''
+
     TODO
-    `s0_code` to be curated:
-    `s0_code` is now:
-        the initial state codes
-        the padding codes
-        the action of exit codes
-        len(env.aa_tokens)
-    might cause future conflicts!
-    
-            
-    TODO
-    1.Make it a multiple layer encoder.
-    2.Our module is now 100% autoregressive.
+    1.Our module is now 100% autoregressive.
         Use Decoder-Only frameworks.
+    
     '''
     def __init__(self, 
             embedding_dim:int=128,
@@ -34,8 +25,12 @@ class CircularEncoder(BaseBackboneModule):
             ):
         # hard-code s0/sf since they are also hard-coded in Env
         s0_code:int=20
-        sf_code:int=-100
-        
+        sf_code:int=21
+        n_tokens:int=22 
+        # for robustness, take <pad> into consideration.
+        # 20 aa + <bos> + <pad>
+        # TODO 
+        # due to silly setting of pgfn, I cannot add a <eos> alongside with exit actions.
         super().__init__(embedding_dim=embedding_dim)
         
         (self.sf_code, self.s0_code, self.max_length) = (
@@ -46,7 +41,7 @@ class CircularEncoder(BaseBackboneModule):
         self.pos_eb_dim = self.embedding_dim // (self.nhead * 2)
         
         self.embedding = nn.Embedding(
-            num_embeddings=s0_code + 1,
+            num_embeddings=n_tokens,
             embedding_dim=self.embedding_dim,
             padding_idx=s0_code,
         )
@@ -65,7 +60,7 @@ class CircularEncoder(BaseBackboneModule):
         elif self.pos_embedding=='linear':
             self.pos_embedder_=RotaryPositionalEmbeddings(
                 dim=self.embedding_dim//self.nhead,
-                max_seq_len=self.max_length)
+                max_seq_len=self.max_length+2)
             self.pos_embedder=self.linear_embedding
     def forward(
         self, trajs: Tensor
@@ -77,13 +72,15 @@ class CircularEncoder(BaseBackboneModule):
         Consider future implementation of `jaxtyping`
 
         '''
-        trajs = torch.where(trajs != self.sf_code, trajs, self.s0_code)
-        # trajs.clone()
-        trajs[trajs == self.sf_code] = self.s0_code
-        batch_shape, state_shape = trajs.shape[:-1], trajs.shape[-1]
-        ori_mask = trajs == self.s0_code
+        if trajs.shape[0]==0:
+            return torch.zeros(*trajs.shape,self.embedding_dim,device=trajs.device)
         
-        # TODO use some real <bos> <eos>
+        # trajs = torch.where(trajs != self.sf_code, trajs, self.s0_code)
+        # trajs.clone()
+        # trajs[trajs == self.sf_code] = self.s0_code
+        batch_shape, state_shape = trajs.shape[:-1], trajs.shape[-1]
+        ori_mask = trajs == self.sf_code
+        
         ori_mask[...,0] = False 
         
         trajs = trajs.view(-1, state_shape)
@@ -99,23 +96,26 @@ class CircularEncoder(BaseBackboneModule):
         trajs = trajs.view(batch_shape + trajs.shape[-2:])
 
         # src_key_padding_mask_dim=len(ori_mask.shape)
-        ext_key_padding_mask = ori_mask.reshape(*ori_mask.shape, 1).repeat(
-            *[1] * len(ori_mask.shape), trajs.shape[-1]
-        )
+        # ext_key_padding_mask = ori_mask.reshape(*ori_mask.shape, 1).repeat(
+        #     *[1] * len(ori_mask.shape), trajs.shape[-1]
+        # )
         # print(ext_key_padding_mask.shape)
         # print(trajs.shape)
-        trajs[ext_key_padding_mask] = torch.nan
-        return torch.nanmean(trajs, dim=-2)
+        # trajs[ext_key_padding_mask] = torch.nan
+        # return torch.nanmean(trajs, dim=-2)
+        # print(trajs[...,0,:].shape)
+        # print(torch.nanmean(trajs, dim=-2).shape)
+        return trajs[...,0,:]
 
     def linear_embedding(self, trajs:Tensor, encoder_mask:Tensor):
         b,s,n=trajs.shape
-        trajs=trajs.reshape(b,s,self.nhead,-1)
+        trajs=trajs.reshape(b,s,self.nhead,self.embedding_dim//self.nhead)
         trajs=self.pos_embedder_(trajs)
         return trajs.reshape(b,s,-1)
         # assert isinstance(self.embedder,RotaryPositionalEmbeddings)
         
     def circular_embedding(self, trajs:Tensor,encoder_mask:Tensor):
-        b, l, e = encoder_mask.shape[0], self.max_length, self.pos_eb_dim
+        b, l, e = encoder_mask.shape[0], self.max_length+2, self.pos_eb_dim
         valid_length = (~encoder_mask).long().sum(dim=-1)
         _ = torch.einsum(
             "i,j,k->ijk",
