@@ -10,7 +10,7 @@ from torch import Tensor,nn
 import torch
 from gfn.gflownet import TBGFlowNet,FMGFlowNet
 from gfn.containers import Trajectories
-from .utils.plots import aa_dist,seqlength_dist,reward_dist
+from .utils.plots import aa_dist,seqlength_dist,reward_dist,simple_aagroup_dist
 from lightning.pytorch.loggers import TensorBoardLogger
 from torch.utils.tensorboard.writer import SummaryWriter
 from torch.utils.data import IterableDataset,DataLoader
@@ -246,7 +246,7 @@ class AdditivePepTBModule(L.LightningModule):
             writer.add_figure(tag='val/length_dist',
                     figure=seqlength_dist(seqs,max_length=self.max_length)[0],global_step=global_step)
             writer.add_figure(tag='val/aa_dist',
-                    figure=aa_dist(seqs,max_length=self.max_length)[0],global_step=global_step)
+                    figure=simple_aagroup_dist(seqs,max_length=self.max_length)[0],global_step=global_step)
             
             writer.add_figure(tag='val/reward_dist',
                     figure=reward_dist(r,max_score=self.max_score)[0],global_step=global_step)
@@ -331,7 +331,7 @@ class AdditivePepTBModule(L.LightningModule):
             optimizer_z=torch.optim.SGD(params= self.gfn.logz_parameters()
                     ,lr=self.lr*self.logZ_lr_coef)
             scheduler=LambdaLR(optimizer,lr_lambda=scheduler_lambda)
-            scheduler_z=LambdaLR(optimizer,lr_lambda=scheduler_lambda)
+            # scheduler_z=LambdaLR(optimizer_z,lr_lambda=lambda epoch:min(0.01))
             # scheduler_lambdas=[]
             return ([optimizer,optimizer_z],
                     [

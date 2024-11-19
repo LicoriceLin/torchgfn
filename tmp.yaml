@@ -29,7 +29,7 @@ trainer:
   fast_dev_run: false
   max_epochs: null
   min_epochs: null
-  max_steps: 100000
+  max_steps: 1000000
   min_steps: null
   max_time: null
   limit_train_batches: null
@@ -57,18 +57,19 @@ trainer:
   plugins: null
   sync_batchnorm: false
   reload_dataloaders_every_n_epochs: 0
-  default_root_dir: lightning_logs/TB_finetune_min6/
+  default_root_dir: lightning_logs/TB_finetune_min12/
 model:
   env: 
     class_path: cpgfn.envs.AdditivePepEnv
     init_args:
       reward: simple_pattern_v1
-      min_length: 6
+      min_length: 12
       max_length: 12
       reward_kwargs:
         hard_maxlen_penalty: false
         log_s: false
         beta: 5
+        len_score: 0
 
   backbone: 
     class_path: cpgfn.models.CircularEncoder
@@ -82,14 +83,14 @@ model:
   loss_mode: tb
   sample_mode: random
   # alpha: 2.
-  z0: 40.
+  z0: 45.
   logZ_lr_coef: 1e3
 
   head_hidden_dim: 1024
   head_num_layers: 3
   final_norm: false
 
-  train_bs: 16
+  train_bs: 48
   val_bs: 512
   lr: 1e-4
   freeze_backbone: 60000
