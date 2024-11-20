@@ -282,6 +282,7 @@ class AdditivePepTBModule(L.LightningModule):
             writer.add_scalar("val/mean_rewards",torch.exp(trajectories.log_rewards-self.beta).mean(),global_step=true_step)
             writer.add_scalar("val/mean_log_rewards",trajectories.log_rewards.mean()-self.beta,global_step=true_step)
             writer.add_scalar("val/loss", loss.item(),global_step=true_step)
+            writer.add_scalar('val/mean_len',trajectories.when_is_done.float().mean()-1,global_step=true_step)
             if self.loss_mode=='tb':
                 writer.add_scalar('val/z0',self.gfn.logZ.item(),global_step=true_step)
             # elif self.loss=='fm':
@@ -390,7 +391,8 @@ class AdditivePepTBModule(L.LightningModule):
             #         return 1.
             #     else:
             #         return 0.99**(epoch-100)
-            scheduler=LambdaLR(optimizer,lr_lambda=partial(fwd_scheduler_lambda,f_step=10,w_step=10,decay_after=0.99,norm_init=1.0))
+            scheduler=LambdaLR(optimizer,lr_lambda=partial(
+                fwd_scheduler_lambda,f_step=10,w_step=10,decay_after=0.99,norm_init=1.0))
             return {
                 "optimizer": optimizer, 
                 "lr_scheduler": 
