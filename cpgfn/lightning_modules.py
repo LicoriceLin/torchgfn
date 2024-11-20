@@ -279,11 +279,11 @@ class AdditivePepTBModule(L.LightningModule):
                         figure=reward_dist(r,max_score=self.max_score)[0],global_step=true_step)
                 
                 writer.add_text('val/sample_seq','\n'.join(seqs[:5]),global_step=true_step)
-                writer.add_scalar("val/mean_rewards",torch.exp(trajectories.log_rewards-self.beta).mean(),global_step=true_step)
-                writer.add_scalar("val/mean_log_rewards",trajectories.log_rewards.mean()-self.beta,global_step=true_step)
-                writer.add_scalar("val/loss", loss.item(),global_step=true_step)
-                if self.loss_mode=='tb':
-                    writer.add_scalar('val/z0',self.gfn.logZ.item(),global_step=true_step)
+            writer.add_scalar("val/mean_rewards",torch.exp(trajectories.log_rewards-self.beta).mean(),global_step=true_step)
+            writer.add_scalar("val/mean_log_rewards",trajectories.log_rewards.mean()-self.beta,global_step=true_step)
+            writer.add_scalar("val/loss", loss.item(),global_step=true_step)
+            if self.loss_mode=='tb':
+                writer.add_scalar('val/z0',self.gfn.logZ.item(),global_step=true_step)
             # elif self.loss=='fm':
             
         elif self.loss_mode == 'fit':
