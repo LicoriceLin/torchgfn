@@ -78,16 +78,17 @@ class Sampler:
         else:
             with no_conditioning_exception_handler("estimator", self.estimator):
                 estimator_output = self.estimator(states)
-
-        dist = self.estimator.to_probability_distribution(
-            states, estimator_output, **policy_kwargs
-        )
-
+        # is this bug or feature: policy_kwargs shoudl be used to sample action, but should not be used to calculate log_prob?
         with torch.no_grad():
+            dist = self.estimator.to_probability_distribution(
+                states, estimator_output, **policy_kwargs
+            )
             actions = dist.sample()
-
+        
+        true_dist = self.estimator.to_probability_distribution(
+                states, estimator_output)
         if save_logprobs:
-            log_probs = dist.log_prob(actions)
+            log_probs = true_dist.log_prob(actions)
             if torch.any(torch.isinf(log_probs)):
                 raise RuntimeError("Log probabilities are inf. This should not happen.")
         else:

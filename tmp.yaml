@@ -37,7 +37,7 @@ trainer:
   limit_test_batches: null
   limit_predict_batches: 1
   overfit_batches: 0.0
-  val_check_interval: 500
+  val_check_interval: ${model.val_check_interval} # no use, be overrided by model.val_check_interval
   check_val_every_n_epoch: null
   num_sanity_val_steps: null
   log_every_n_steps: 1
@@ -57,19 +57,19 @@ trainer:
   plugins: null
   sync_batchnorm: false
   reload_dataloaders_every_n_epochs: 0
-  default_root_dir: lightning_logs/TB_finetune_min12/
+  default_root_dir: lightning_logs/TB_finetune_min6_onpolicy_debug_logprob/
 model:
   env: 
     class_path: cpgfn.envs.AdditivePepEnv
     init_args:
       reward: simple_pattern_v1
-      min_length: 12
+      min_length: 6
       max_length: 12
       reward_kwargs:
         hard_maxlen_penalty: false
         log_s: false
         beta: 5
-        len_score: 0
+        len_score: 10
 
   backbone: 
     class_path: cpgfn.models.CircularEncoder
@@ -80,22 +80,30 @@ model:
       num_layers: 6
       max_length: ${model.env.init_args.max_length}
       pos_embedding: linear
+  
   loss_mode: tb
-  sample_mode: random
+  sample_mode: gfn
   # alpha: 2.
-  z0: 45.
-  logZ_lr_coef: 1e3
+  z0: 50.
 
   head_hidden_dim: 1024
-  head_num_layers: 3
   final_norm: false
+  head_num_layers: 3
 
   train_bs: 48
   val_bs: 512
-  lr: 1e-4
-  freeze_backbone: 60000
-  denom_lr: 20
-  sf_bias: -0.5
+  lr: 5e-5
+  logZ_lr_coef: 2e3
+  denom_lr: 100
+  warmup_lr_coef: 1e-2
+
+  val_check_interval: 1000
+  freeze_backbone_val: 100 # total step= val_check_interval*freeze_backbone_val
+  scheduler_every_val: 1
+  warm_up_iter: 40 # val_check_interval*warm_up_iter*2
+  plot_every_val: 5 
+
+  sf_bias: -2
   epsilon: 0.3
   temperature: 1.0
   

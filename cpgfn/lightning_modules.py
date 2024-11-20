@@ -19,7 +19,7 @@ from math import log
 from lightning.pytorch.callbacks import BaseFinetuning,BasePredictionWriter
 from torch.optim.optimizer import Optimizer
 from typing_extensions import override
-
+from functools import partial
 '''
 how to check params: 
 python -m cpgfn.lightning_modules fit --model.env.help AdditivePepEnv
@@ -38,55 +38,77 @@ class AdditivePepTBModule(L.LightningModule):
                  
         env:AdditivePepEnv,
         backbone:BaseBackboneModule,
-        
+        # modes selection
         loss_mode:Literal['tb','fm','fit']='tb',
         sample_mode:Literal['gfn','random']='gfn',
-        
+        # head properties
         head_hidden_dim:int=512,
         final_norm:bool=False,
         head_num_layers:int=1,
-        
+        # batch sizes
         train_bs:int=32,
         val_bs:int=512,
+        # learning rates
         lr:float=0.1,
-        logZ_lr_coef:float=1e3,
-        
-        freeze_backbone:int=0, # global step before unfreeze backbone
-        denom_lr:float=10,
-
+        logZ_lr_coef:float=1e3, # adjust logZ0 lr
+        denom_lr:float=10, # adjust backbone lr (1/ratio to head_lr)
+        warmup_lr_coef:float=1e-2,
+        # iteration periods 
+        val_check_interval:int=500, # overide trainers in callbacks
+        scheduler_every_val:int=2, # every x validation, update the scheduler 
+        plot_every_val:int=20, # every x validation, draw the plots
+        freeze_backbone_val:int=0, # after x validation, unfreeze backbone
+        warm_up_iter:int=2, 
+            # `fwd_scheduler_lambda`'s f_step & w_step. 
+            # so the global warm_up step = scheduler_every_val * scheduler_every_val * warm_up_iter
+            # GFN loss property
         z0:float=0.,
         alpha: float = 1.0,
-        
+        # sampling bias
         sf_bias: float = 0.0,
         epsilon: float = 0.0,
         temperature: float = 1.0,
-        
+        # param loaders for: 
+            # 1) load parameters for finetune; 
+            # 2) load legacy checkpoints 
         load_mode:Literal['full','backbone']='full',
         load_state_from:str|None = None,
-        # *args, 
-        # **kwargs
         ):
         super().__init__()
         self.automatic_optimization = False
         self.env=env.to(self.device)
 
+        # modes selection
+        self.loss_mode=loss_mode
+        self.sample_mode=sample_mode
+        
+        # head properties
         self.head_hidden_dim=head_hidden_dim
         self.head_num_layers=head_num_layers
         self.final_norm=final_norm
 
+        # batch sizes
         self.train_bs=train_bs
         self.val_bs=val_bs
+
+        # learning rates
         self.lr=lr
         self.logZ_lr_coef=logZ_lr_coef
-        self.freeze_backbone=freeze_backbone
         self.denom_lr=denom_lr
-        self.sf_bias=sf_bias
+        self.warmup_lr_coef=warmup_lr_coef
+        # iteration periods 
+        self.val_check_interval=val_check_interval 
+        self.scheduler_every_val=scheduler_every_val
+        self.plot_every_val=plot_every_val
+        self.freeze_backbone_val=freeze_backbone_val
+        self.warm_up_iter=warm_up_iter
+
+        #sampling bias
+        self.sf_bias = sf_bias
         self.epsilon = epsilon
-        self.temperature=temperature
-        
-        self.loss_mode=loss_mode
-        self.sample_mode=sample_mode
-        #Temperal,for logging
+        self.temperature = temperature
+
+        #temperal,for logging/plots
         self.max_length=self.env.max_length
         self.beta=self.env.reward_kwargs.get('beta',0.)
         self.max_score=sum([v for k,v in self.env.reward_kwargs.items() if 'score' in k])
@@ -192,7 +214,8 @@ class AdditivePepTBModule(L.LightningModule):
             optimizer.zero_grad()
 
         true_step=self.trainer.global_step/len(self.optimizers())
-        if (true_step+1) % (1000) ==0 and true_step>1000:
+        sch_interval=self.val_check_interval*self.scheduler_every_val
+        if (true_step) % (sch_interval) ==0 and true_step>sch_interval:
             schs=self.lr_schedulers()
             if schs is None:
                 return
@@ -238,31 +261,36 @@ class AdditivePepTBModule(L.LightningModule):
                 loss=self.gfn.loss(self.env,states_tuple=samples)
             else:
                 raise ValueError
-            global_step=self.trainer.global_step
-            
             
             #TODO multiple GPU training compatible
             writer:SummaryWriter=self.logger._experiment
-            writer.add_figure(tag='val/length_dist',
-                    figure=seqlength_dist(seqs,max_length=self.max_length)[0],global_step=global_step)
-            writer.add_figure(tag='val/aa_dist',
-                    figure=simple_aagroup_dist(seqs,max_length=self.max_length)[0],global_step=global_step)
-            
-            writer.add_figure(tag='val/reward_dist',
-                    figure=reward_dist(r,max_score=self.max_score)[0],global_step=global_step)
-            
-            writer.add_text('val/sample_seq','\n'.join(seqs[:5]),global_step=global_step)
-            writer.add_scalar("val/mean_rewards",torch.exp(trajectories.log_rewards-self.beta).mean(),global_step=global_step)
-            writer.add_scalar("val/loss", loss.item(),global_step=global_step)
-            if self.loss_mode=='tb':
-                writer.add_scalar('val/z0',self.gfn.logZ.item(),global_step=global_step)
+            # if isinstance(self.optimizers(),list):
+            #     true_step=self.trainer.global_step/len(self.optimizers())
+            # else:
+            #     true_step=self.trainer.global_step
+            true_step=self.trainer.global_step//self.n_optimizers
+            if true_step%(self.val_check_interval*self.plot_every_val)==0:
+                writer.add_figure(tag='val/length_dist',
+                        figure=seqlength_dist(seqs,max_length=self.max_length)[0],global_step=true_step)
+                writer.add_figure(tag='val/aa_dist',
+                        figure=simple_aagroup_dist(seqs,max_length=self.max_length)[0],global_step=true_step)
+                
+                writer.add_figure(tag='val/reward_dist',
+                        figure=reward_dist(r,max_score=self.max_score)[0],global_step=true_step)
+                
+                writer.add_text('val/sample_seq','\n'.join(seqs[:5]),global_step=true_step)
+                writer.add_scalar("val/mean_rewards",torch.exp(trajectories.log_rewards-self.beta).mean(),global_step=true_step)
+                writer.add_scalar("val/mean_log_rewards",trajectories.log_rewards.mean()-self.beta,global_step=true_step)
+                writer.add_scalar("val/loss", loss.item(),global_step=true_step)
+                if self.loss_mode=='tb':
+                    writer.add_scalar('val/z0',self.gfn.logZ.item(),global_step=true_step)
             # elif self.loss=='fm':
             
         elif self.loss_mode == 'fit':
             loss=self.loss(
                 self.reward_estimator(
                     self.env.preprocessor(final_states)).reshape(-1),
-                r/self.max_score-0.5
+                r/self.max_score-0.5 #0.5: drag mean to 0.
                 )
         else:
             raise ValueError
@@ -297,20 +325,6 @@ class AdditivePepTBModule(L.LightningModule):
     #     super().on_predict_epoch_end()
         # return super().predict_step(*args, **kwargs)
     def configure_optimizers(self):
-        # TODO go to init parameters
-        def scheduler_lambda(epoch:int):
-            f_step,w_step=50,50
-            norm_init,decay_after=0.01,0.998
-
-            i=(1/norm_init)**(1/(w_step))
-            # print(i)
-            if epoch<=f_step:
-                return norm_init
-            elif epoch<=(w_step+f_step):
-                return norm_init* (i**(epoch-f_step))
-            else:
-                return decay_after**(epoch-w_step-f_step)
-        
         if self.loss_mode=='tb':
             core=self.gfn.pf.module
         elif self.loss_mode=='fm':
@@ -321,42 +335,76 @@ class AdditivePepTBModule(L.LightningModule):
             raise NotImplementedError
         core:nn.Sequential
 
-        if self.freeze_backbone==0:
+        if self.freeze_backbone_val==0:
             basic_params=core.parameters()
         else:
             basic_params=core[1:].parameters()
         
         optimizer = torch.optim.Adam(basic_params, lr=self.lr)
+        frequency=self.val_check_interval*self.scheduler_every_val
         if self.loss_mode=='tb':
             optimizer_z=torch.optim.SGD(params= self.gfn.logz_parameters()
                     ,lr=self.lr*self.logZ_lr_coef)
-            scheduler=LambdaLR(optimizer,lr_lambda=scheduler_lambda)
-            # scheduler_z=LambdaLR(optimizer_z,lr_lambda=lambda epoch:min(0.01))
+            scheduler=LambdaLR(optimizer,lr_lambda=partial(fwd_scheduler_lambda,
+                    f_step=self.warm_up_iter,w_step=self.warm_up_iter,
+                    decay_after=0.998,norm_init=self.warmup_lr_coef))
+            scheduler_z=LambdaLR(optimizer_z,
+                lr_lambda=partial(fwd_scheduler_lambda,
+                    f_step=self.warm_up_iter//2,w_step=self.warm_up_iter//2,
+                    decay_after=0.9998,norm_init=self.warmup_lr_coef/10))
             # scheduler_lambdas=[]
             return ([optimizer,optimizer_z],
                     [
                 {"scheduler": scheduler,
                  "monitor": "val_loss",
                  "interval": "step",
-                 "frequency": 1000,
+                 "frequency": frequency,
+                 "strict":False
+                 },
+                  {"scheduler": scheduler_z,
+                 "monitor": "val_loss",
+                 "interval": "step",
+                 "frequency": frequency,
                  "strict":False
                  } ])
             # optimizer.add_param_group({"params": self.gfn.logz_parameters(), 
             #     "lr": self.lr*self.logZ_lr_coef})
             # scheduler_lambdas=[scheduler_lambda,lambda epoch: 0.999**epoch]
         elif self.loss_mode == 'fm':
-            scheduler_lambdas=[scheduler_lambda]
+            scheduler=LambdaLR(optimizer,lr_lambda=partial(fwd_scheduler_lambda,
+                    f_step=self.warm_up_iter,w_step=self.warm_up_iter,
+                    decay_after=0.998,norm_init=self.warmup_lr_coef))
+            return {
+            "optimizer": optimizer, 
+            "lr_scheduler": 
+                {"scheduler": scheduler,
+                 "monitor": "val_loss",
+                 "interval": "step",
+                 "frequency": frequency,
+                 "strict":False
+                 } 
+            }
         elif self.loss_mode == 'fit':
-            def scheduler_lambda_fit(epoch:int):
-                if epoch<=100:
-                    return 1.
-                else:
-                    return 0.99**(epoch-100)
-            scheduler_lambdas=[scheduler_lambda_fit]
+            # def scheduler_lambda_fit(epoch:int):
+            #     if epoch<=100:
+            #         return 1.
+            #     else:
+            #         return 0.99**(epoch-100)
+            scheduler=LambdaLR(optimizer,lr_lambda=partial(fwd_scheduler_lambda,f_step=10,w_step=10,decay_after=0.99,norm_init=1.0))
+            return {
+                "optimizer": optimizer, 
+                "lr_scheduler": 
+                    {"scheduler": scheduler,
+                    "monitor": "val_loss",
+                    "interval": "step",
+                    "frequency": frequency,
+                    "strict":False
+                    } 
+                }
         else:
             raise NotImplementedError
         
-        scheduler=LambdaLR(optimizer,lr_lambda=scheduler_lambdas)
+        
 
         # if self.loss_mode =='tb':
         #     optimizer = torch.optim.Adam(self.gfn.pf_pb_parameters(), lr=self.lr)
@@ -378,25 +426,16 @@ class AdditivePepTBModule(L.LightningModule):
         # scheduler=ReduceLROnPlateau(optimizer,threshold=1e-4,min_lr=self.lr*1e-4,patience=20,factor=0.5)
 
         
-        return {
-            "optimizer": optimizer, 
-            "lr_scheduler": 
-                {"scheduler": scheduler,
-                 "monitor": "val_loss",
-                 "interval": "step",
-                 "frequency": 1000,
-                 "strict":False
-                 } 
-            }
+
         # return [optimizer],[scheduler]
     # def 
     
     def configure_callbacks(self):
         # TODO configure predict writer
-        if self.freeze_backbone>0:
+        if self.freeze_backbone_val>0:
             return [
                 BackboneFreeze(
-                    unfreeze_at_step=self.freeze_backbone,
+                    unfreeze_at_step=self.freeze_backbone_val*self.val_check_interval,
                     denom_lr=self.denom_lr)
                     ]
         
@@ -405,7 +444,22 @@ class AdditivePepTBModule(L.LightningModule):
         self.env.to(device=device,dtype=dtype)
         return super().to(*args, **kwargs)
         
-        
+    @property
+    def n_optimizers(self)->int:
+        # print(f"ffff {self.optimizers()}")
+        # import pdb;pdb.set_trace()
+        if getattr(self,'_n_optimizers',0)==0:
+            optimizers=self.optimizers()
+            if isinstance(optimizers,list) and len(optimizers)>0:
+                # print(f"ffff {len(optimizers)}")
+                self._n_optimizers=len(optimizers)
+            elif isinstance(optimizers,torch.optim.Optimizer):
+                self._n_optimizers=1
+            else:
+                Warning('.optimizers() not initialized! Return 1 as placeholder')
+                return 1
+        return self._n_optimizers
+    
 def add_head(backbone:BaseBackboneModule,
             head_hidden_dim:int,
             outputs_dim:int,
@@ -442,7 +496,20 @@ def add_head(backbone:BaseBackboneModule,
     
     return nn.Sequential(*modules)
 
-
+def fwd_scheduler_lambda(epoch:int,f_step=50,w_step=50,norm_init=0.01,decay_after=0.998):
+    '''
+    freeze, warmup and decay scheduler lambda
+    '''
+    # TODO go to init parameters
+    i=(1/norm_init)**(1/(w_step))
+    # print(i)
+    if epoch<=f_step:
+        return norm_init
+    elif epoch<=(w_step+f_step):
+        return norm_init* (i**(epoch-f_step))
+    else:
+        return decay_after**(epoch-w_step-f_step)
+    
 # %%
 class BackboneFreeze(BaseFinetuning):
     def __init__(self, unfreeze_at_step=5000,denom_lr:float=10):
@@ -465,7 +532,8 @@ class BackboneFreeze(BaseFinetuning):
     
     def finetune_function(self, pl_module: "AdditivePepTBModule", current_step: int, optimizer: Optimizer) -> None:
         """forced align to the basic params group."""
-        if current_step == self._unfreeze_at_step:
+        true_step=current_step//pl_module.n_optimizers
+        if true_step == self._unfreeze_at_step:
             if pl_module.loss_mode=='tb':
                 backbone=pl_module.gfn.pf.module[0]
             elif pl_module.loss_mode=='fm':
@@ -484,7 +552,7 @@ class BackboneFreeze(BaseFinetuning):
                 )
             
         # 
-        elif current_step > self._unfreeze_at_step:
+        elif true_step > self._unfreeze_at_step:
             current_lr = optimizer.param_groups[0]["lr"]
             optimizer.param_groups[-1]["lr"] = current_lr/self.denom_lr
 
@@ -495,15 +563,40 @@ class BackboneFreeze(BaseFinetuning):
         trainer: "L.Trainer", pl_module: "AdditivePepTBModule", batch: Any, batch_idx: int
         ) -> None:
         for opt_idx, optimizer in enumerate(trainer.optimizers):
+            # TODO better logic to ignore unwanted optimizers.
             num_param_groups = len(optimizer.param_groups)
-            self.finetune_function(pl_module, trainer.global_step, optimizer)
+            if isinstance(optimizer,torch.optim.Adam):
+                self.finetune_function(pl_module, trainer.global_step, optimizer)
             current_param_groups = optimizer.param_groups
             self._store(pl_module, opt_idx, num_param_groups, current_param_groups)
+                
+                # only add to the `Adam`
 
 
     @override
-    def on_train_epoch_start(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
+    def on_train_epoch_start(self, trainer: L.Trainer, pl_module: "AdditivePepTBModule") -> None:
         return
+    
+    @override
+    def setup(self, trainer: L.Trainer, pl_module: "AdditivePepTBModule",stage: str) -> None:
+        #TODO another utils callback
+        trainer.val_check_interval=pl_module.val_check_interval
+
+        optimizers=pl_module.optimizers()
+        if isinstance(optimizers,list) and len(optimizers)>=1:
+            pl_module._n_optimizers=len(optimizers)
+            Warning(f'_n_optimizers = { pl_module._n_optimizers}')
+        elif isinstance(optimizers,torch.optim.Optimizer):
+            pl_module._n_optimizers=1
+            Warning(f'_n_optimizers = { pl_module._n_optimizers}')
+        else:
+            Warning('.optimizers() not initialized! Return 1 as placeholder')
+            pl_module._n_optimizers=0
+        
+        Warning(f'n_optimizers = {pl_module.n_optimizers}')
+        trainer.fit_loop.epoch_loop.max_steps=trainer.max_steps*pl_module.n_optimizers
+
+        return super().setup(trainer, pl_module,stage)
 
 # %%
 class GFNSampler(IterableDataset):
