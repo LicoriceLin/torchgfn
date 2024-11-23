@@ -78,27 +78,27 @@ class Sampler:
         else:
             with no_conditioning_exception_handler("estimator", self.estimator):
                 estimator_output = self.estimator(states)
-        # is this bug or feature: policy_kwargs shoudl be used to sample action, but should not be used to calculate log_prob?
+
+        dist = self.estimator.to_probability_distribution(
+            states, estimator_output, **policy_kwargs
+        )
+
         with torch.no_grad():
-            dist = self.estimator.to_probability_distribution(
-                states, estimator_output, **policy_kwargs
-            )
             actions = dist.sample()
-        
-        true_dist = self.estimator.to_probability_distribution(
-                states, estimator_output)
+
         if save_logprobs:
-            log_probs = true_dist.log_prob(actions)
+            log_probs = dist.log_prob(actions)
             if torch.any(torch.isinf(log_probs)):
                 raise RuntimeError("Log probabilities are inf. This should not happen.")
         else:
             log_probs = None
 
         actions = env.actions_from_tensor(actions)
-
         if not save_estimator_outputs:
             estimator_output = None
 
+        assert log_probs is None or log_probs.shape == actions.batch_shape
+        # assert estimator_output is None or estimator_output.shape == actions.batch_shape  TODO: check expected shape
         return actions, log_probs, estimator_output
 
     def sample_trajectories(

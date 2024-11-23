@@ -20,15 +20,19 @@ from lightning.pytorch.callbacks import BaseFinetuning,BasePredictionWriter
 from torch.optim.optimizer import Optimizer
 from typing_extensions import override
 from functools import partial
+from lightning.pytorch.loggers import WandbLogger
+from wandb import Image
+import matplotlib.pyplot as plt
 '''
 how to check params: 
 python -m cpgfn.lightning_modules fit --model.env.help AdditivePepEnv
 '''
-
-
+import os
+os.environ['WANDB_INIT_TIMEOUT'] = '600'
 # %%
 class AdditivePepTBModule(L.LightningModule):
-    logger:TensorBoardLogger
+    # logger:TensorBoardLogger
+    logger:WandbLogger
     gfn:TBGFlowNet|FMGFlowNet
     '''
     #TODO
@@ -40,7 +44,7 @@ class AdditivePepTBModule(L.LightningModule):
         backbone:BaseBackboneModule,
         # modes selection
         loss_mode:Literal['tb','fm','fit']='tb',
-        sample_mode:Literal['gfn','random']='gfn',
+        sample_mode:Literal['gfn','random','hybrid']='gfn',
         # head properties
         head_hidden_dim:int=512,
         final_norm:bool=False,
@@ -141,7 +145,7 @@ class AdditivePepTBModule(L.LightningModule):
                 preprocessor=env.preprocessor,
             )
             self.gfn=FMGFlowNet(logF=logf_estimator,alpha=alpha)
-            
+            self.recalculate_all_logprobs=True if (self.sample_mode=='gfn' and (self.temperature != 1.0 or self.sf_bias != 0.0 or self.epsilon != 0.0)) else False
         elif self.loss_mode=='fit':
             assert self.sample_mode=='random'
             self.reward_estimator=add_head(backbone,head_hidden_dim,
@@ -151,7 +155,7 @@ class AdditivePepTBModule(L.LightningModule):
             raise ValueError
         
         if load_state_from is not None:
-            state_dict:Dict[str,Tensor]=torch.load(load_state_from)['state_dict']
+            state_dict:Dict[str,Tensor]=torch.load(load_state_from,map_location=self.device)['state_dict']
             if load_mode=='full':
                 self.load_state_dict(state_dict)
             elif load_mode=='backbone':
@@ -169,8 +173,10 @@ class AdditivePepTBModule(L.LightningModule):
             else:
                 raise ValueError
             
+        self.save_hyperparameters()
+            
     def training_step(self, batch:Tensor, batch_idx):
-        # with torch.no_grad():
+        # 
         if self.sample_mode=='gfn':
             trajectories=self.gfn.sample_trajectories(self.env,self.train_bs,
                 sf_bias=self.sf_bias, epsilon=self.epsilon,temperature=self.temperature)
@@ -178,6 +184,13 @@ class AdditivePepTBModule(L.LightningModule):
             trajectories=self.env.seqs_to_trajectories(
                 self.env.sample_random_seqs(self.train_bs)
             )
+        elif self.sample_mode=='hybrid':
+            with torch.no_grad():
+                trajectories=self.gfn.sample_trajectories(self.env,self.train_bs//2,save_logprobs=False,
+                    sf_bias=self.sf_bias, epsilon=self.epsilon,temperature=self.temperature)
+                trajectories.extend(self.env.seqs_to_trajectories(
+                    self.env.sample_random_seqs(self.train_bs//2)
+                    ))
         else:
             raise ValueError
         
@@ -187,7 +200,7 @@ class AdditivePepTBModule(L.LightningModule):
         
         # import pdb;pdb.set_trace()
         if self.loss_mode=='tb':
-            loss=self.gfn.loss(self.env, trajectories=trajectories)
+            loss=self.gfn.loss(self.env, trajectories=trajectories,recalculate_all_logprobs=self.recalculate_all_logprobs)
         elif self.loss_mode=='fm':
             samples=self.gfn.to_training_samples(trajectories)
             loss=self.gfn.loss(self.env,states_tuple=samples)
@@ -213,7 +226,7 @@ class AdditivePepTBModule(L.LightningModule):
             optimizer.step()
             optimizer.zero_grad()
 
-        true_step=self.trainer.global_step/len(self.optimizers())
+        true_step=self.trainer.global_step//len(self.optimizers())
         sch_interval=self.val_check_interval*self.scheduler_every_val
         if (true_step) % (sch_interval) ==0 and true_step>sch_interval:
             schs=self.lr_schedulers()
@@ -263,28 +276,44 @@ class AdditivePepTBModule(L.LightningModule):
                 raise ValueError
             
             #TODO multiple GPU training compatible
-            writer:SummaryWriter=self.logger._experiment
+            # writer:SummaryWriter=self.logger._experiment
             # if isinstance(self.optimizers(),list):
             #     true_step=self.trainer.global_step/len(self.optimizers())
             # else:
             #     true_step=self.trainer.global_step
-            true_step=self.trainer.global_step//self.n_optimizers
-            if true_step%(self.val_check_interval*self.plot_every_val)==0:
-                writer.add_figure(tag='val/length_dist',
-                        figure=seqlength_dist(seqs,max_length=self.max_length)[0],global_step=true_step)
-                writer.add_figure(tag='val/aa_dist',
-                        figure=simple_aagroup_dist(seqs,max_length=self.max_length)[0],global_step=true_step)
-                
-                writer.add_figure(tag='val/reward_dist',
-                        figure=reward_dist(r,max_score=self.max_score)[0],global_step=true_step)
-                
-                writer.add_text('val/sample_seq','\n'.join(seqs[:5]),global_step=true_step)
-            writer.add_scalar("val/mean_rewards",torch.exp(trajectories.log_rewards-self.beta).mean(),global_step=true_step)
-            writer.add_scalar("val/mean_log_rewards",trajectories.log_rewards.mean()-self.beta,global_step=true_step)
-            writer.add_scalar("val/loss", loss.item(),global_step=true_step)
-            writer.add_scalar('val/mean_len',trajectories.when_is_done.float().mean()-1,global_step=true_step)
+            metrics:Dict[str,float]={
+            "val/mean_rewards":torch.exp(trajectories.log_rewards-self.beta).mean().item(),
+            "val/mean_log_rewards":trajectories.log_rewards.mean().item()-self.beta,
+            "val/loss":loss.item(),
+            'val/mean_len':trajectories.when_is_done.float().mean()-1,
+            }
             if self.loss_mode=='tb':
-                writer.add_scalar('val/z0',self.gfn.logZ.item(),global_step=true_step)
+                metrics['val/z0']=self.gfn.logZ.item()
+            self.log_dict(metrics)
+
+            true_step=self.trainer.global_step//self.n_optimizers
+            # true_step=self.trainer.global_step
+            if true_step%(self.val_check_interval*self.plot_every_val)==0:
+                plt.close('all')
+                self.logger.log_image('val/length_dist',[seqlength_dist(seqs,max_length=self.max_length)[0]],step=true_step)
+                self.logger.log_image('val/aa_dist',[simple_aagroup_dist(seqs,max_length=self.max_length)[0]],step=true_step)
+                self.logger.log_image('val/reward_dist',[reward_dist(r,max_score=self.max_score)[0]],step=true_step)
+                self.logger.log_text('val/sample_seq',columns=[f's{i+1}' for i in range(5)],data=[seqs[:5]],step=true_step)
+                # writer.add_figure(tag='val/length_dist',
+                #         figure=seqlength_dist(seqs,max_length=self.max_length)[0],global_step=true_step)
+                # writer.add_figure(tag='val/aa_dist',
+                #         figure=simple_aagroup_dist(seqs,max_length=self.max_length)[0],global_step=true_step)
+                
+                # writer.add_figure(tag='val/reward_dist',
+                #         figure=reward_dist(r,max_score=self.max_score)[0],global_step=true_step)
+                
+                # writer.add_text('val/sample_seq','\n'.join(seqs[:5]),global_step=true_step)
+            # writer.add_scalar("val/mean_rewards",torch.exp(trajectories.log_rewards-self.beta).mean(),global_step=true_step)
+            # writer.add_scalar("val/mean_log_rewards",trajectories.log_rewards.mean()-self.beta,global_step=true_step)
+            # writer.add_scalar("val/loss", loss.item(),global_step=true_step)
+            # writer.add_scalar('val/mean_len',trajectories.when_is_done.float().mean()-1,global_step=true_step)
+            # if self.loss_mode=='tb':
+            #     writer.add_scalar('val/z0',self.gfn.logZ.item(),global_step=true_step)
             # elif self.loss=='fm':
             
         elif self.loss_mode == 'fit':
@@ -687,6 +716,7 @@ class PseudoDataModule(L.LightningDataModule):
             max_worker:int=16):
         self.train_bs=train_bs
         self.val_bs=val_bs
+        self.max_worker=max_worker
         super().__init__()
         
     def setup(self, stage):
@@ -713,7 +743,8 @@ class PseudoDataModule(L.LightningDataModule):
 if __name__=='__main__':
     cli=LightningCLI(model_class=AdditivePepTBModule,
         datamodule_class=PseudoDataModule,
-        parser_kwargs={"parser_mode": "omegaconf"})
+        parser_kwargs={"parser_mode": "omegaconf"},
+        save_config_kwargs={'overwrite':True})
 # LightningCLI
 # 
 # cli.config
