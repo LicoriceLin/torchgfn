@@ -1,0 +1,126 @@
+# lightning.pytorch==2.4.0
+seed_everything: 42
+trainer:
+  accelerator: gpu
+  strategy: auto
+  devices:
+    - 0
+  num_nodes: 1
+  precision: null
+  logger: 
+    class_path: lightning.pytorch.loggers.WandbLogger
+    init_args:
+      project: sandbox
+      group: simple-reward-debug
+      name: "baseline"
+      log_model: true
+      save_dir: wandb/${trainer.logger.init_args.project}/${trainer.logger.init_args.group}-${trainer.logger.init_args.name}/
+      offline: false
+  callbacks:
+    - class_path: lightning.pytorch.callbacks.LearningRateMonitor
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        dirpath: ${trainer.logger.init_args.save_dir}
+        filename: ckpt-{step:06d}-{val_loss:.2f}
+        monitor: 'val_loss'
+        verbose: false
+        save_last: true
+        save_top_k: 1
+        save_weights_only: false
+        mode: min
+        auto_insert_metric_name: true
+        every_n_train_steps: ${trainer.val_check_interval} 
+        train_time_interval: null
+        every_n_epochs: null
+        save_on_train_epoch_end: null
+        enable_version_counter: true
+  fast_dev_run: false
+  max_epochs: null
+  min_epochs: null
+  max_steps: 3000000
+  min_steps: null
+  max_time: 01:11:45:00
+  limit_train_batches: null
+  limit_val_batches: 1
+  limit_test_batches: null
+  limit_predict_batches: 1
+  overfit_batches: 0.0
+  val_check_interval: ${model.val_check_interval} # no use, be overrided by model.val_check_interval
+  check_val_every_n_epoch: null
+  num_sanity_val_steps: null
+  log_every_n_steps: 1
+  enable_checkpointing: null
+  enable_progress_bar: null
+  enable_model_summary: null
+  accumulate_grad_batches: 1
+  gradient_clip_val: null
+  gradient_clip_algorithm: null
+  deterministic: null
+  benchmark: null
+  inference_mode: true
+  use_distributed_sampler: true
+  profiler: null
+  detect_anomaly: false
+  barebones: false
+  plugins: null
+  sync_batchnorm: false
+  reload_dataloaders_every_n_epochs: 0
+  default_root_dir: .
+model:
+  env: 
+    class_path: cpgfn.envs.AdditivePepEnv
+    init_args:
+      reward: simple_pattern_v1
+      min_length: 6
+      max_length: 12
+      reward_kwargs:
+        hard_maxlen_penalty: false
+        log_s: false
+        beta: 5
+        len_score: 10
+
+  backbone: 
+    class_path: cpgfn.models.CircularEncoder
+    init_args:
+      embedding_dim: 512
+      nhead: 8
+      dim_feedforward: 2048
+      num_layers: 6
+      max_length: ${model.env.init_args.max_length}
+      pos_embedding: linear
+  
+  loss_mode: tb
+  sample_mode: gfn
+  # alpha: 2.
+  z0: 50.
+
+  head_hidden_dim: 1024
+  final_norm: false
+  head_num_layers: 3
+
+  train_bs: 512
+  val_bs: 2048
+  lr: 1e-4
+  logZ_lr_coef: 2e3
+  denom_lr: 100
+  warmup_lr_coef: 1e-2
+
+  val_check_interval: 1000
+  freeze_backbone_val: 160 # total step= val_check_interval*freeze_backbone_val
+  scheduler_every_val: 1
+  warm_up_iter: 40 # val_check_interval*warm_up_iter*2
+  plot_every_val: 5 
+
+  sf_bias: -2
+  epsilon: 0.3
+  temperature: 1.0
+  
+  load_mode: backbone
+  load_state_from: lightning_logs/FIT/ckpt-step=086400-val_loss=0.00.ckpt
+data:
+  train_bs: ${model.train_bs}
+  val_bs: ${model.val_bs}
+  max_worker: 1
+optimizer: null
+lr_scheduler: null
+# ckpt_path: null
