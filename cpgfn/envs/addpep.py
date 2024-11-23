@@ -125,7 +125,7 @@ class AdditivePepEnv(DiscreteEnv):
         if 'max_length' in si.parameters:
             reward_kwargs_.update({'max_length':max_length})
         self.reward_kwargs=reward_kwargs_
-        self.reward_fn=partial(reward_fn,**reward_kwargs)
+        self.reward_fn=partial(reward_fn,**reward_kwargs_)
         
         # self.states_class=self.make_states_class()
         # self.actions_class=self.make_actions_class()

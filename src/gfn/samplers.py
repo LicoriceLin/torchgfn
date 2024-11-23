@@ -94,10 +94,11 @@ class Sampler:
             log_probs = None
 
         actions = env.actions_from_tensor(actions)
-
         if not save_estimator_outputs:
             estimator_output = None
 
+        assert log_probs is None or log_probs.shape == actions.batch_shape
+        # assert estimator_output is None or estimator_output.shape == actions.batch_shape  TODO: check expected shape
         return actions, log_probs, estimator_output
 
     def sample_trajectories(
