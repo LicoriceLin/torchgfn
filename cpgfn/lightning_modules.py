@@ -116,6 +116,9 @@ class AdditivePepTBModule(L.LightningModule):
         self.max_length=self.env.max_length
         self.beta=self.env.reward_kwargs.get('beta',0.)
         self.max_score=sum([v for k,v in self.env.reward_kwargs.items() if 'score' in k])
+        if self.env.reward_kwargs.get('length_norm',False):
+            norm_const=self.env.reward_kwargs.get('norm_const',log(20))
+            self.max_score+=norm_const*self.env.max_length
         self.log_s=self.env.reward_kwargs.get('log_s',False)
         
         if self.loss_mode=='tb':   
@@ -135,7 +138,7 @@ class AdditivePepTBModule(L.LightningModule):
                 preprocessor=env.preprocessor,
             )
             self.gfn = TBGFlowNet(logZ=z0, pf=pf_estimator, pb=pb_estimator)
-            
+            self.recalculate_all_logprobs=True if (self.sample_mode=='gfn' and (self.temperature != 1.0 or self.sf_bias != 0.0 or self.epsilon != 0.0)) else False
         elif self.loss_mode=='fm':
             logf_estimator=DiscretePolicyEstimator(
                 add_head(backbone,head_hidden_dim,outputs_dim=env.n_actions,
@@ -145,7 +148,6 @@ class AdditivePepTBModule(L.LightningModule):
                 preprocessor=env.preprocessor,
             )
             self.gfn=FMGFlowNet(logF=logf_estimator,alpha=alpha)
-            self.recalculate_all_logprobs=True if (self.sample_mode=='gfn' and (self.temperature != 1.0 or self.sf_bias != 0.0 or self.epsilon != 0.0)) else False
         elif self.loss_mode=='fit':
             assert self.sample_mode=='random'
             self.reward_estimator=add_head(backbone,head_hidden_dim,
@@ -221,12 +223,13 @@ class AdditivePepTBModule(L.LightningModule):
         # return loss
 
         self.manual_backward(loss)
-        for optimizer in self.optimizers():
+        opts=self.optimizers() if self.n_optimizers>1 else [self.optimizers()]
+        for optimizer in opts:
             optimizer:torch.optim.Optimizer
             optimizer.step()
             optimizer.zero_grad()
 
-        true_step=self.trainer.global_step//len(self.optimizers())
+        true_step=self.trainer.global_step//self.n_optimizers
         sch_interval=self.val_check_interval*self.scheduler_every_val
         if (true_step) % (sch_interval) ==0 and true_step>sch_interval:
             schs=self.lr_schedulers()

@@ -115,6 +115,9 @@ class CircularEncoder(BaseBackboneModule):
         # assert isinstance(self.embedder,RotaryPositionalEmbeddings)
         
     def circular_embedding(self, trajs:Tensor,encoder_mask:Tensor):
+        '''
+        TODO update to fit new state shape
+        '''
         b, l, e = encoder_mask.shape[0], self.max_length+2, self.pos_eb_dim
         valid_length = (~encoder_mask).long().sum(dim=-1)
         _ = torch.einsum(

@@ -36,7 +36,8 @@ def aa_dist(seqs:List[str],max_length:int=20):
     ax.set_ylabel('aa type')
     return fig,ax
 
-def reward_dist(log_rewards:Tensor,max_score:int=20):
+def reward_dist(log_rewards:Tensor,max_score:float=20.):
+    max_score=int(max_score)+1
     fig,ax=plt.subplots(1,1)
     ax:Axes
     ax.hist(log_rewards.reshape(-1).to('cpu').numpy(),

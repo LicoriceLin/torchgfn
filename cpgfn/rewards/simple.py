@@ -34,6 +34,8 @@ def simple_pattern_v1(seq:str,
         beta:float=1.,
         hard_maxlen_penalty:bool=True,
         log_s:bool=False,
+        length_norm:bool=False,
+        norm_const:float=log(20),
         **kwargs):
     '''
     rewards would be e**(v0_rewards)
@@ -44,7 +46,9 @@ def simple_pattern_v1(seq:str,
     if seq_len==0 or m:
         s=s+1e-5
         if log_s:
-           s=log(s)
+            s=log(s)
+        if length_norm:
+            s+=norm_const*(max_length-len(seq))
         return s+beta
     elif seq_len<=0.25:
         s+=len_score*4*seq_len
@@ -62,4 +66,6 @@ def simple_pattern_v1(seq:str,
     s=s+1e-5
     if log_s:
         s=log(s)
+    if length_norm:
+        s+=norm_const*(max_length-len(seq))
     return s+beta
